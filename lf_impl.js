@@ -76,10 +76,19 @@ if (typeof globalThis.self === 'undefined') { globalThis.self = globalThis; }
     return code.indexOf('hercules,v1,alpha') !== -1;
   }
 
+  function gcdx(a, b) { while (b) { const t = a % b; a = b; b = t; } return a; }
+
   function wrapLoader(code) {
     const HEXC = '0123456789abcdef';
+    const KL = 16;
     const key = [];
-    for (let i = 0; i < 8; i++) key.push(1 + Math.floor(Math.random() * 255));
+    for (let i = 0; i < KL; i++) key.push(1 + Math.floor(Math.random() * 254));
+    const STEP = 1 + 2 * Math.floor(Math.random() * 7);
+    const KOFF = Math.floor(Math.random() * KL);
+    const ADDM = 1 + 2 * Math.floor(Math.random() * 127);
+    const M1 = 1 + 2 * Math.floor(Math.random() * 32767);
+    const M2 = 1 + 2 * Math.floor(Math.random() * 32767);
+
     let bytesArr;
     if (typeof TextEncoder !== 'undefined') {
       bytesArr = new TextEncoder().encode(code);
@@ -87,63 +96,193 @@ if (typeof globalThis.self === 'undefined') { globalThis.self = globalThis; }
       bytesArr = new Uint8Array(code.length);
       for (let i = 0; i < code.length; i++) bytesArr[i] = code.charCodeAt(i) & 255;
     }
-    let hex = '';
-    for (let i = 0; i < bytesArr.length; i++) {
-      const b = (bytesArr[i] ^ key[i % 8]) & 255;
-      hex += HEXC.charAt(b >> 4) + HEXC.charAt(b & 15);
-    }
-    let sum = 0;
-    for (let i = 0; i < hex.length; i++) sum = (sum * 31 + hex.charCodeAt(i)) >>> 0;
-    const len2 = bytesArr.length * 2;
-    const keyL = key.map(function (k) { const d = Math.floor(Math.random() * 5); return String(k * 5 + d) + '-' + d; });
-    const shim = 'if not math.ldexp then math.ldexp=function(x,n) return x*2^n end end\n';
-    const lines = [
-      shim,
-      'local __K={' + keyL.map(function (e) { return '((' + e + ')/5)'; }).join(',') + '}',
-      'local __DECOY_SESSION, __DECOY_HOSTKEY = nil, nil',
-      'local __H="' + hex + '"',
-      'local __RUN=loadstring or load',
-      'local __XOR',
-      'do',
-      '  local ok, f = pcall(__RUN, "return function(a,b) return a~b end")',
-      '  if ok and f then __XOR=f()',
-      '  elseif bit32 and bit32.bxor then __XOR=bit32.bxor',
-      '  elseif bit and bit.bxor then __XOR=bit.bxor',
-      '  else __XOR=function(a,b)',
-      '    local r,p=0,1',
-      '    for _=1,8 do',
-      '      local aa,bb=a%2,b%2',
-      '      if aa~=bb then r=r+p end',
-      '      a=(a-aa)/2 b=(b-bb)/2 p=p*2',
-      '    end',
-      '    return r',
-      '  end',
-      '  end',
-      'end',
-      'local __T={}',
-      'for c=48,57 do __T[c]=c-48 end',
-      'for c=97,102 do __T[c]=c-87 end',
-      'for c=65,70 do __T[c]=c-55 end',
-      'local __N=#__H',
-      'if __N ~= ' + len2 + ' then error("LuaFuscator: integrity check failed",2) end',
-      'local __S=0',
-      'for __i=1,__N do __S=(__S*31+string.byte(__H,__i))%4294967296 end',
-      'if __S ~= ' + sum + ' then error("LuaFuscator: integrity check failed",2) end',
-      'local __B={}',
-      'local __j=0',
-      'for __i=1,__N,2 do',
-      '  local a,b=string.byte(__H,__i,__i+1)',
-      '  __j=__j+1',
-      '  __B[__j]=string.char(__XOR(__T[a]*16+__T[b],__K[(__j-1)%8+1]))',
-      'end',
-      'local __D=table.concat(__B)',
-      'local __C=__RUN(__D,"@luafuscator")',
-      'if not __C then error("LuaFuscator: failed to load payload",2) end',
-      'return __C()'
-    ];
-    return lines.join('\n') + '\n';
-  }
+    const n = bytesArr.length;
+    if (n === 0) return 'return (loadstring or load)("")()\n';
 
+    let ds = key[0] % 16777216;
+    const D = function () { ds = (ds * 48271 + key[ds % KL] + 11) % 16777216; return ds; };
+
+    const enc = new Uint8Array(n);
+    for (let i = 0; i < n; i++) {
+      let v = bytesArr[i];
+      v = v ^ key[(i + KOFF) % KL];
+      v = v ^ key[(i * STEP) % KL];
+      v = (v + ((i * ADDM) % 256)) & 255;
+      enc[i] = v;
+    }
+    const p = new Int32Array(n);
+    for (let i = 0; i < n; i++) p[i] = i;
+    for (let i = n - 1; i > 0; i--) { const j = D() % (i + 1); const t = p[i]; p[i] = p[j]; p[j] = t; }
+    const perm = new Uint8Array(n);
+    for (let i = 0; i < n; i++) perm[i] = enc[p[i]];
+    let hex = '';
+    for (let i = 0; i < n; i++) hex += HEXC.charAt(perm[i] >> 4) + HEXC.charAt(perm[i] & 15);
+
+    const chunks = [];
+    { let pos = 0; while (pos < hex.length) { const sz = 32 + (D() % 64); chunks.push(hex.slice(pos, pos + sz)); pos += sz; } }
+    const NC = chunks.length;
+    let MA = 1;
+    if (NC > 2) { do { MA = 1 + Math.floor(Math.random() * (NC - 1)); } while (gcdx(MA, NC) !== 1); }
+    const MB = Math.floor(Math.random() * NC);
+
+    const CHarr = new Array(NC);
+    for (let i = 0; i < NC; i++) CHarr[((i * MA) + MB) % NC] = chunks[i];
+    let h1 = 0, h2 = 0;
+    for (let i = 0; i < hex.length; i++) {
+      const c = hex.charCodeAt(i);
+      h1 = (h1 * M1 + c) % 4294967296;
+      h2 = (h2 * M2 + c) % 4294967296;
+    }
+
+    const used = Object.create(null);
+    function nm() {
+      const L = 'abcdefghijklmnopqrstuvwxyz';
+      const A = L + '0123456789';
+      for (;;) {
+        let s = L[Math.floor(Math.random() * 26)];
+        const len = 6 + Math.floor(Math.random() * 9);
+        for (let i = 1; i < len; i++) s += A[Math.floor(Math.random() * 36)];
+        if (!used[s]) { used[s] = true; return s; }
+      }
+    }
+    function numExpr(v) {
+      const forms = [];
+      if (v < 65536) {
+        const A = Math.floor(Math.random() * (v + 1));
+        forms.push('(' + A + '+' + (v - A) + ')');
+        const B = Math.floor(Math.random() * 97);
+        forms.push('(' + (v + B) + '-' + B + ')');
+        if (v >= 2) {
+          const A3 = Math.floor(Math.random() * (v + 1));
+          const B3 = (v - A3) + Math.floor(Math.random() * (v + 1));
+          forms.push('(' + A3 + '+' + B3 + '-' + (A3 + B3 - v) + ')');
+        }
+        forms.push('(' + Math.floor(v / 16) + '*16+' + (v % 16) + ')');
+      } else {
+        const A = Math.floor(v / 65536);
+        const B = v % 65536;
+        forms.push('((' + A + '*65536)+' + B + ')');
+      }
+      let e = forms[Math.floor(Math.random() * forms.length)];
+      if (Math.random() < 0.5) e = '(' + e + ')';
+      return e;
+    }
+    function hexGarg() {
+      let s = '';
+      const L = 8 + Math.floor(Math.random() * 24);
+      for (let i = 0; i < L; i++) s += HEXC.charAt(Math.floor(Math.random() * 16));
+      return s;
+    }
+    const garg = [];
+    const gN = 6 + Math.floor(Math.random() * 7);
+    for (let i = 0; i < gN; i++) {
+      const r = Math.floor(Math.random() * 5);
+      if (r === 0) garg.push('local ' + nm() + ', ' + nm() + ' = nil, nil');
+      else if (r === 1) garg.push('local ' + nm() + ' = nil');
+      else if (r === 2) garg.push('local ' + nm() + ' = "' + hexGarg() + '"');
+      else if (r === 3) { const f = nm(); garg.push('local function ' + f + '(x) if x == nil then return nil end return x end'); }
+      else garg.push('local ' + nm() + ' = (function() return nil end)()');
+    }
+
+    const K = nm(), RUN = nm(), XF = nm(), DIG = nm(), CH = nm(), MAe = nm(), MBe = nm(), SL = nm();
+    const H = nm(), S1 = nm(), S2 = nm(), EB = nm(), P = nm(), NB = nm(), DST = nm(), DR = nm();
+    const E = nm(), OUT = nm(), SRC = nm(), FN = nm(), d1 = nm(), d2 = nm(), f1 = nm();
+
+    const lines = [];
+    const garbAt = Object.create(null);
+    for (let i = 0; i < garg.length; i++) {
+      const slot = 1 + Math.floor(Math.random() * 13);
+      (garbAt[slot] = garbAt[slot] || []).push(garg[i]);
+    }
+    const G = function (s) { const g = garbAt[s]; if (g) for (let i = 0; i < g.length; i++) lines.push(g[i]); };
+
+    lines.push('if not math.ldexp then math.ldexp=function(x,n) return x*2^n end end');
+    G(1);
+    lines.push('local ' + K + '={' + key.map(numExpr).join(',') + '}');
+    lines.push('local __DECOY_SESSION, __DECOY_HOSTKEY = nil, nil');
+    G(2);
+    lines.push('local ' + RUN + '=(loadstring or load)');
+    G(3);
+    lines.push('local ' + XF);
+    lines.push('do');
+    lines.push(' local ok,f=pcall(' + RUN + ',"return function(a,b) return a~b end")');
+    lines.push(' if ok and f then ' + XF + '=f()');
+    lines.push(' elseif bit32 and bit32.bxor then ' + XF + '=bit32.bxor');
+    lines.push(' elseif bit and bit.bxor then ' + XF + '=bit.bxor');
+    lines.push(' else');
+    lines.push('  ' + XF + '=function(a,b)');
+    lines.push('   local r,pp=0,1');
+    lines.push('   for _=1,8 do');
+    lines.push('    local aa,bb=a%2,b%2');
+    lines.push('    if aa~=bb then r=r+pp end');
+    lines.push('    a=(a-aa)/2 b=(b-bb)/2 pp=pp*2');
+    lines.push('   end');
+    lines.push('   return r');
+    lines.push('  end');
+    lines.push(' end');
+    lines.push('end');
+    G(4);
+    lines.push('local ' + DIG + '={}');
+    lines.push('for c=48,57 do ' + DIG + '[c]=c-48 end');
+    lines.push('for c=97,102 do ' + DIG + '[c]=c-87 end');
+    lines.push('for c=65,70 do ' + DIG + '[c]=c-55 end');
+    G(5);
+    lines.push('local ' + CH + '={' + CHarr.map(function (s) { return "'" + s + "'"; }).join(',') + '}');
+    lines.push('local ' + MAe + ',' + MBe + '=' + numExpr(MA) + ',' + numExpr(MB));
+    lines.push('local ' + SL + '={}');
+    lines.push('for i=0,' + numExpr(NC - 1) + ' do ' + SL + '[i+1]=' + CH + '[((i*' + MAe + ')+' + MBe + ')%' + NC + '+1] end');
+    lines.push('local ' + H + '=table.concat(' + SL + ')');
+    G(6);
+    lines.push('if #' + H + '~=' + numExpr(hex.length) + " then error('LuaFuscator: integrity check failed',2) end");
+    lines.push('local ' + S1 + ',' + S2 + '=0,0');
+    lines.push('for i=1,#' + H + ' do');
+    lines.push(' local c=string.byte(' + H + ',i)');
+    lines.push(' ' + S1 + '=(' + S1 + '*' + numExpr(M1) + '+c)%(65536*65536)');
+    lines.push(' ' + S2 + '=(' + S2 + '*' + numExpr(M2) + '+c)%(65536*65536)');
+    lines.push('end');
+    lines.push('if ' + S1 + '~=' + numExpr(h1) + ' or ' + S2 + '~=' + numExpr(h2) + " then error('LuaFuscator: integrity check failed',2) end");
+    G(7);
+    lines.push('local ' + EB + '={}');
+    lines.push('local ' + NB + '=math.floor(#' + H + '/2)');
+    lines.push('local ' + d1 + '=0');
+    lines.push('for i=1,#' + H + ',2 do');
+    lines.push(' ' + d1 + '=' + d1 + '+1');
+    lines.push(' ' + EB + '[' + d1 + ']=' + DIG + '[string.byte(' + H + ',i)]*16+' + DIG + '[string.byte(' + H + ',i+1)]');
+    lines.push('end');
+    G(8);
+    lines.push('local ' + P + '={}');
+    lines.push('for i=1,' + NB + ' do ' + P + '[i]=i end');
+    lines.push('local ' + DST + '=' + K + '[1]');
+    lines.push('local function ' + DR + '()');
+    lines.push(' ' + DST + '=(' + DST + '*48271+' + K + '[(' + DST + '%16)+1]+11)%16777216');
+    lines.push(' return ' + DST);
+    lines.push('end');
+    lines.push('for i=' + NB + ',2,-1 do');
+    lines.push(' local j=' + DR + '()%i');
+    lines.push(' local t=' + P + '[i]');
+    lines.push(' ' + P + '[i]=' + P + '[j+1]');
+    lines.push(' ' + P + '[j+1]=t');
+    lines.push('end');
+    lines.push('local ' + E + '={}');
+    lines.push('for i=1,' + NB + ' do ' + E + '[' + P + '[i]]=' + EB + '[i] end');
+    G(9);
+    lines.push('local ' + OUT + '={}');
+    lines.push('for i=1,' + NB + ' do');
+    lines.push(' local v=' + E + '[i]');
+    lines.push(' v=(v-(((i-1)*' + numExpr(ADDM) + ')%256))%256');
+    lines.push(' v=' + XF + '(v,' + K + '[(((i-1)*' + numExpr(STEP) + ')%16)+1])');
+    lines.push(' v=' + XF + '(v,' + K + '[(((i-1)+' + numExpr(KOFF) + ')%16)+1])');
+    lines.push(' ' + OUT + '[i]=string.char(v)');
+    lines.push('end');
+    lines.push('local ' + SRC + '=table.concat(' + OUT + ')');
+    G(10);
+    lines.push('local ' + FN + '=' + RUN + '(' + SRC + ',"@luafuscator")');
+    lines.push('if not ' + FN + " then error('LuaFuscator: failed to load payload',2) end");
+    lines.push('return ' + FN + '()');
+    const out = lines.join('\n') + '\n';
+    wrapLoader.lastMeta = { hexLen: hex.length, h1: h1, h2: h2, key: key.slice(), STEP: STEP, KOFF: KOFF, ADDM: ADDM, M1: M1, M2: M2, NC: NC, MA: MA, MB: MB, n: n };
+    return out;
+  }
   function luauCompat(code) {
     return code.split('assert(load(').join('assert((loadstring or load)(');
   }
